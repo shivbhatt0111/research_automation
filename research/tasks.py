@@ -115,7 +115,7 @@ def discover_and_scrape(task_id: int, round_number: int):
     try:
         companies = GeminiService().find_companies(
             task.industry, task.location, request_count,
-            exclude_names=exclude_names,
+            exclude_names=exclude_names, variation=round_number - 1,
         )
     except (GeminiClientError, GeminiServiceError) as exc:
         # Partial results already collected - finalize with what we have
@@ -159,6 +159,13 @@ def discover_and_scrape(task_id: int, round_number: int):
     )
 
     if not unique_companies:
+        if round_number < MAX_DISCOVERY_ROUNDS:
+            logger.info(
+                '[Task %d] Round %d: no new businesses, retrying discovery (round %d)',
+                task_id, round_number, round_number + 1,
+            )
+            discover_and_scrape.delay(task_id, round_number + 1)
+            return
         finalize_research.delay(task_id)
         return
 
@@ -219,13 +226,14 @@ def _process_company(task_id: int, company: dict) -> None:
     name = company.get('company_name') or 'Unknown'
     norm = normalize_company_name(name)
 
-    # Garbage name filter: "Tiles Private Limited" type entries where the AI
-    # only returned suffix words with no real company name
-    meaningful_words = [w for w in norm if len(w) >= 3]
-    if len(meaningful_words) < 2 or len(name.strip()) < 5:
-        logger.info('[Task %d] Garbage/incomplete company name skipped: %r', task_id, name)
+
+    # Only reject degenerate names (empty, 1-2 chars). Everything else flows
+    # through - garbage companies die naturally at the "No usable data" stage.
+    if len(name.strip()) < 3:
+        logger.info('[Task %d] Degenerate company name skipped: %r', task_id, name)
         _mark_attempted(task_id, company)
         return
+
 
     # Directory URLs (cataloxy/justdial/indiamart/govt portals etc.) are
     # listings, not official websites - clean them before any scraping
@@ -480,8 +488,13 @@ def finalize_research(task_id: int) -> None:
 
     task.emails_found = sum(1 for c in selected if c.email)
     task.phones_found = sum(1 for c in selected if c.phone)
+
+    task.total_companies = len(selected)
     task.status = ResearchTask.Status.COMPLETED
+    
     task.completed_at = timezone.now()
+    if task.created_at:
+        task.duration_seconds = int((task.completed_at - task.created_at).total_seconds())
     task.save()
 
     logger.info(

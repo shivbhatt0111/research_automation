@@ -37,8 +37,9 @@ class GeminiService:
         text = text.strip().replace('```json', '').replace('```', '').strip()
         return json.loads(text)
 
+
     def find_companies(self, industry: str, location: str, count: int,
-                       exclude_names: list[str] = None) -> list[dict]:
+                       exclude_names: list[str] = None, variation: int = 0) -> list[dict]:
         prompt = company_discovery_prompt(industry, location, count, exclude_names)
 
         try:
@@ -50,8 +51,9 @@ class GeminiService:
             return companies[:count]
         except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
             logger.warning('Gemini discovery failed (%s), falling back to DDG search', exc)
-
-        companies = self.search.find_companies(industry, location, count, exclude_names)
+        companies = self.search.find_companies(
+            industry, location, count, exclude_names, variation=variation
+        )
         if not companies:
             raise GeminiServiceError('Both Gemini grounding and DDG discovery failed')
         logger.info('Discovery via DDG search succeeded: %d companies', len(companies))

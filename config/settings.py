@@ -52,12 +52,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD', default=''),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default='5432'),
     }
 }
+
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -121,8 +134,11 @@ GROQ_API_KEYS = [
     config('GROQ_API_KEY_5', default=''),
 ]
 
-LLM_EXTRACTION_ORDER = ['groq', 'gemini']
-LLM_DISCOVERY_ORDER = ['gemini', 'groq']
+# LLM_EXTRACTION_ORDER = ['groq', 'gemini']
+# LLM_DISCOVERY_ORDER = ['gemini', 'groq']
+
+LLM_EXTRACTION_ORDER = ['groq', 'openrouter', 'gemini']
+LLM_DISCOVERY_ORDER = ['gemini', 'openrouter', 'groq']
 
 # Crawl4AI
 CRAWL4AI_ENABLED = config('CRAWL4AI_ENABLED', default=True, cast=bool)
@@ -171,3 +187,5 @@ CACHES = {
 # Global dedup: skip companies that already exist in DB with usable data
 SKIP_EXISTING_COMPANIES = config('SKIP_EXISTING_COMPANIES', default=True, cast=bool)
 TAVILY_API_KEY = config('TAVILY_API_KEY', default='')
+
+OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')

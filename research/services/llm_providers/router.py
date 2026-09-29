@@ -8,9 +8,12 @@ from .groq_provider import GroqProvider
 
 logger = logging.getLogger(__name__)
 
+from .openrouter_provider import OpenRouterProvider
+
 PROVIDER_REGISTRY = {
     'gemini': GeminiProvider,
     'groq': GroqProvider,
+    'openrouter': OpenRouterProvider,
 }
 
 
@@ -28,8 +31,11 @@ class LLMRouter:
         availability = {
             'groq': any(k for k in settings.GROQ_API_KEYS if k),
             'gemini': any(k for k in settings.GEMINI_API_KEYS if k),
+            'openrouter': bool(getattr(settings, 'OPENROUTER_API_KEY', '')),
         }
+            
         return availability.get(name, False)
+    
 
     def generate(self, prompt: str) -> str:
         errors = []

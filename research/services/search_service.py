@@ -93,18 +93,31 @@ class SearchService:
         text = text.strip().replace('```json', '').replace('```', '').strip()
         return json.loads(text)
 
+
+
     def find_companies(self, industry: str, location: str, count: int,
-                       exclude_names: list[str] = None) -> list[dict]:
+                       exclude_names: list[str] = None, variation: int = 0) -> list[dict]:
         exclude_block = ''
         if exclude_names:
             exclude_block = ('DO NOT include these already-tried businesses: '
                              + ', '.join(exclude_names[:20]) + '\n')
 
+        # Query variations - har discovery attempt alag angle se search kare,
+        # taki retry rounds pe naye results mil sakein
+        query_sets = [
+            (f'best {industry} in {location} official website',
+             f'top {industry} {location} contact details'),
+            (f'{industry} companies {location} list',
+             f'{industry} {location} directory'),
+            (f'leading {industry} firms {location} website contact',
+             f'{industry} {location} top companies email phone'),
+            (f'{industry} {location} latest companies 2024 2025',
+             f'major {industry} units {location} contact'),
+        ]
+        selected_queries = query_sets[variation % len(query_sets)]
+
         snippets = []
-        for query in (
-            f'best {industry} in {location} official website',
-            f'top {industry} {location} contact details',
-        ):
+        for query in selected_queries:
             for r in self._results(query, 10):
                 snippets.append(
                     f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}"
@@ -143,6 +156,8 @@ Respond ONLY with a JSON array, maximum {count} items, no explanations:
             logger.warning('Search discovery produced no parseable companies')
             return []
         return companies[:count]
+
+
 
     def search_contacts(self, company_name: str, location: str) -> dict:
         snippets = [
