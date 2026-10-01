@@ -100,19 +100,6 @@ CELERY_TASK_SOFT_TIME_LIMIT = 60 * 18
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 
-# Email
-EMAIL_BACKEND = config(
-    'EMAIL_BACKEND',
-    default='django.core.mail.backends.smtp.EmailBackend',
-)
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-MANAGER_EMAIL = config('MANAGER_EMAIL')
-
 
 # Gemini - Multi Key Rotation (5 keys, different accounts)
 GEMINI_API_KEYS = [
@@ -133,6 +120,25 @@ GROQ_API_KEYS = [
     config('GROQ_API_KEY_4', default=''),
     config('GROQ_API_KEY_5', default=''),
 ]
+
+# Tavily - Multi Key Rotation
+TAVILY_API_KEYS = [
+    config('TAVILY_API_KEY_1', default=''),
+    config('TAVILY_API_KEY_2', default=''),
+    config('TAVILY_API_KEY_3', default=''),
+    config('TAVILY_API_KEY_4', default=''),
+    config('TAVILY_API_KEY_5', default=''),
+]
+
+# OpenRouter - Multi Key Rotation
+OPENROUTER_API_KEYS = [
+    config('OPENROUTER_API_KEY_1', default=''),
+    config('OPENROUTER_API_KEY_2', default=''),
+    config('OPENROUTER_API_KEY_3', default=''),
+    config('OPENROUTER_API_KEY_4', default=''),
+    config('OPENROUTER_API_KEY_5', default=''),
+]
+
 
 # LLM_EXTRACTION_ORDER = ['groq', 'gemini']
 # LLM_DISCOVERY_ORDER = ['gemini', 'groq']
@@ -189,3 +195,46 @@ SKIP_EXISTING_COMPANIES = config('SKIP_EXISTING_COMPANIES', default=True, cast=b
 TAVILY_API_KEY = config('TAVILY_API_KEY', default='')
 
 OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')
+# settings.py
+STRICT_OFFICIAL_ONLY = config('STRICT_OFFICIAL_ONLY', default=True, cast=bool)
+# LinkedIn profile enrichment for key persons (email/phone from public profiles)
+LINKEDIN_ENRICHMENT = config('LINKEDIN_ENRICHMENT', default=True, cast=bool)
+
+
+
+
+
+# ================= Email Configuration =================
+# SMTP sending account (Gmail with App Password - regular password will not work)
+EMAIL_BACKEND = config(
+    'EMAIL_BACKEND',
+    default='django.core.mail.backends.smtp.EmailBackend',
+)
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# ================= Email Campaign =================
+# Send mode: 'test' routes every email to TEST_RECIPIENTS,
+# 'production' sends to the company's own email address
+SEND_MODE = config('SEND_MODE', default='test')
+TEST_RECIPIENTS = config('TEST_RECIPIENTS', default='', cast=Csv())
+
+# Daily sending quota (Gmail allows ~500/day, keep a safety buffer)
+EMAIL_DAILY_LIMIT = config('EMAIL_DAILY_LIMIT', default=450, cast=int)
+EMAIL_SEND_DELAY_SECONDS = config('EMAIL_SEND_DELAY_SECONDS', default=3, cast=int)
+
+# Scheduled send time (24h format, IST). Emails go out daily at this time.
+EMAIL_SEND_TIME = config('EMAIL_SEND_TIME', default='10:30')
+
+# Sender identity used in every email signature
+SENDER_COMPANY_NAME = config('SENDER_COMPANY_NAME', default='Cloud Zappy')
+SENDER_EMAIL = config('SENDER_EMAIL', default='infosalesteam@cloudzappy.com')
+SENDER_PHONE = config('SENDER_PHONE', default='+91 80785 63745')
+SENDER_WEBSITE = config('SENDER_WEBSITE', default='https://www.cloudzappy.com/')
+
+# LinkedIn profile enrichment for key persons
+LINKEDIN_ENRICHMENT = config('LINKEDIN_ENRICHMENT', default=True, cast=bool)

@@ -221,11 +221,11 @@ def _regex_extract_from_text(text: str) -> tuple[list[str], list[str]]:
     return emails, [p for p in phones if p]
 
 
+
 def _process_company(task_id: int, company: dict) -> None:
     task = ResearchTask.objects.get(id=task_id)
     name = company.get('company_name') or 'Unknown'
     norm = normalize_company_name(name)
-
 
     # Only reject degenerate names (empty, 1-2 chars). Everything else flows
     # through - garbage companies die naturally at the "No usable data" stage.
@@ -234,8 +234,7 @@ def _process_company(task_id: int, company: dict) -> None:
         _mark_attempted(task_id, company)
         return
 
-
-    # Directory URLs (cataloxy/justdial/indiamart/govt portals etc.) are
+    # Directory URLs (cataloxy/justdial/indiamart/zomato/eazydiner etc.) are
     # listings, not official websites - clean them before any scraping
     if is_directory_url(company.get('website') or ''):
         logger.info(
@@ -313,7 +312,7 @@ def _process_company(task_id: int, company: dict) -> None:
         if crawler_phones and not scraped['phone']:
             scraped['phone'] = crawler_phones[0]
 
-    # Crawler-only success ka source mark karo
+    # Mark crawler-only success as the data source
     if crawler_text and not scraped['source_url'] and (scraped['email'] or scraped['phone']):
         scraped['source_url'] = company.get('website') or ''
         scraped['confidence'] = 'HIGH'
@@ -327,13 +326,28 @@ def _process_company(task_id: int, company: dict) -> None:
         scraped['phone'] = scraped['phone'] or ai_contacts.get('phone', '')
         scraped['address'] = scraped['address'] or ai_contacts.get('address', '')
 
-    # Layer 4: Search rescue (Tavily/DDG/Gemini) - blocked/dead/no-website businesses
-    if task.location and (not scraped['email'] or not scraped['phone'] or not scraped['address']):
-        searched = GeminiService().search_contacts(name, task.location)
-        if searched:
-            scraped['email'] = scraped['email'] or searched.get('email', '')
-            scraped['phone'] = scraped['phone'] or searched.get('phone', '')
-            scraped['address'] = scraped['address'] or searched.get('address', '')
+    # Layer 4: Search rescue - STRICT OFFICIAL-ONLY.
+    # Rescued contacts are trusted ONLY from the company's official domain.
+    # No-website businesses get NO rescue (third-party data forbidden).
+    if getattr(settings, 'STRICT_OFFICIAL_ONLY', True) is False:
+        # Loose mode (old behavior): rescue from any source
+        if task.location and (not scraped['email'] or not scraped['phone'] or not scraped['address']):
+            searched = GeminiService().search_contacts(name, task.location)
+            if searched:
+                scraped['email'] = scraped['email'] or searched.get('email', '')
+                scraped['phone'] = scraped['phone'] or searched.get('phone', '')
+                scraped['address'] = scraped['address'] or searched.get('address', '')
+    else:
+        official_domain = normalize_website(company.get('website') or '')
+        if (official_domain and task.location
+                and (not scraped['email'] or not scraped['phone'] or not scraped['address'])):
+            searched = GeminiService().search_contacts(
+                name, task.location, official_domain=official_domain
+            )
+            if searched:
+                scraped['email'] = scraped['email'] or searched.get('email', '')
+                scraped['phone'] = scraped['phone'] or searched.get('phone', '')
+                scraped['address'] = scraped['address'] or searched.get('address', '')
 
     if not scraped['email'] and not scraped['phone'] and not scraped['address']:
         logger.info('[Task %d] No usable data for %s, skipping save', task_id, name)
@@ -354,8 +368,6 @@ def _process_company(task_id: int, company: dict) -> None:
             return
 
     # Area-level location check - dynamic for any location format
-    # (pithampur / sanwer road / vijay nagar / koi bhi area keyword jo
-    #  location string se extract hua, address mein hona chahiye)
     if scraped['address'] and task.location:
         area_check = verify_specific_location(scraped['address'], task.location)
         if area_check is False:
@@ -365,6 +377,20 @@ def _process_company(task_id: int, company: dict) -> None:
             )
             _mark_attempted(task_id, company)
             return
+
+    # Duplicate contact dedup: same email/phone already given to another
+    # company in this task = directory/parent-brand contamination
+    # (pridehotel reservation email, wanderlog/eazydiner listing phones etc.)
+    scraped['email'], scraped['phone'] = _is_duplicate_contact(
+        task_id, scraped['email'], scraped['phone']
+    )
+
+    # If dedup cleared everything (contact was only a duplicate) and there is
+    # no address either, the record adds no value - skip it.
+    if not scraped['email'] and not scraped['phone'] and not scraped['address']:
+        logger.info('[Task %d] Only duplicated data for %s, skipping save', task_id, name)
+        _mark_attempted(task_id, company)
+        return
 
     # Website backfill from email domain (Annova case: info@annovasolutions.com
     # with empty website -> https://annovasolutions.com)
@@ -390,6 +416,32 @@ def _process_company(task_id: int, company: dict) -> None:
         )
         scraped['email'] = ''
 
+    # QUALITY GATE - FINAL: a company without its own website whose only
+    # contact is a generic-provider email (gmail/yahoo etc.) can not be
+    # verified at all. Storing it would poison the database with
+    # untrustworthy records that AI email drafts would later be built on
+    # (MPLUN Indore case). Such businesses are skipped entirely.
+    if not company.get('website') and scraped['email']:
+        if email_domain in COMMON_EMAIL_PROVIDERS:
+            logger.info(
+                '[Task %d] Unverifiable business skipped (no website, generic email): %s',
+                task_id, name,
+            )
+            _mark_attempted(task_id, company)
+            return
+
+    # MINIMUM QUALITY BAR: without a website and without an email, a record
+    # needs BOTH a phone and an address to be identifiable. Anything weaker
+    # is skipped (phone-only or address-only records can not be trusted).
+    if not company.get('website') and not scraped['email']:
+        if not (scraped['phone'] and scraped['address']):
+            logger.info(
+                '[Task %d] Weak record skipped (no website, no email, incomplete contact): %s',
+                task_id, name,
+            )
+            _mark_attempted(task_id, company)
+            return
+
     contact, _ = CompanyContact.objects.update_or_create(
         task_id=task_id,
         normalized_name=norm,
@@ -405,14 +457,23 @@ def _process_company(task_id: int, company: dict) -> None:
         },
     )
 
+    # Register this company's contacts so the NEXT company getting the same
+    # email/phone gets it cleared (duplicate contamination guard)
+    _register_used_contact(task_id, contact.email, contact.phone)
+
     _extract_key_persons(task_id, contact, scraper, company, team_urls,
                          homepage_linkedin, page_text, task.location)
+
+
+
+
 
 
 def _extract_key_persons(task_id: int, contact: CompanyContact, scraper: ScraperService,
                          company: dict, team_urls: list[str], homepage_linkedin: list[str],
                          page_text: str, location: str) -> None:
-    """Team pages first (with LinkedIn URL matching), public web search as fallback."""
+    """Team pages first (with LinkedIn URL matching), public web search as fallback.
+    Then enriches key persons from their public LinkedIn profiles (email/phone)."""
     team_data = scraper.fetch_team_data(company, team_urls)
     team_text = team_data['text'] or page_text
     linkedin_urls = list(dict.fromkeys(team_data['linkedin_urls'] + homepage_linkedin))[:10]
@@ -430,13 +491,31 @@ def _extract_key_persons(task_id: int, contact: CompanyContact, scraper: Scraper
     else:
         source = 'website'
 
+    # LinkedIn profile enrichment: person ke public profile se email/phone
+    # Toggle via settings - LINKEDIN_ENRICHMENT=True/False
+    enriched_count = 0
+    if getattr(settings, 'LINKEDIN_ENRICHMENT', True):
+        gemini = GeminiService()
+        for person in persons:
+            if person.get('linkedin_url'):
+                contacts = gemini.extract_person_contacts_from_linkedin(
+                    person['name'], person['linkedin_url']
+                )
+                if contacts.get('email') and not person.get('email'):
+                    person['email'] = contacts['email']
+                    enriched_count += 1
+                if contacts.get('phone') and not person.get('phone'):
+                    person['phone'] = contacts['phone']
+                    enriched_count += 1
+
     KeyPerson.objects.filter(company=contact).delete()
     for person in persons:
         KeyPerson.objects.create(company=contact, **person)
     if persons:
         logger.info(
-            '[Task %d] Saved %d key persons for %s (via %s, %d linkedin urls)',
-            task_id, len(persons), contact.company_name, source, len(linkedin_urls),
+            '[Task %d] Saved %d key persons for %s (via %s, %d linkedin urls, %d enriched)',
+            task_id, len(persons), contact.company_name, source,
+            len(linkedin_urls), enriched_count,
         )
 
 
@@ -501,3 +580,33 @@ def finalize_research(task_id: int) -> None:
         '[Task %d] Finalized: %d eligible out of %d pool, selected %d (requested %d)',
         task_id, len(eligible), len(all_contacts), len(selected), task.top_companies,
     )
+    
+def _register_used_contact(task_id: int, email: str, phone: str) -> None:
+    """Marks email/phone as used by one company in this task. A second
+    different company receiving the same value = directory contamination."""
+    if email:
+        used = cache.get(f'research:used_emails:{task_id}', set())
+        used.add(email)
+        cache.set(f'research:used_emails:{task_id}', used, timeout=ATTEMPTED_TTL_SECONDS)
+    if phone:
+        used = cache.get(f'research:used_phones:{task_id}', set())
+        used.add(phone)
+        cache.set(f'research:used_phones:{task_id}', used, timeout=ATTEMPTED_TTL_SECONDS)
+
+
+def _is_duplicate_contact(task_id: int, email: str, phone: str) -> tuple[str, str]:
+    """Returns (email, phone) with cross-company duplicates cleared. The same
+    email/phone for a DIFFERENT company in the same task means the value came
+    from a shared directory page or a parent brand (e.g. hotel reservation
+    email given to all its restaurants) - useless for lead-gen."""
+    used_emails = cache.get(f'research:used_emails:{task_id}', set())
+    used_phones = cache.get(f'research:used_phones:{task_id}', set())
+
+    email, phone = email or '', phone or ''
+    if email and email in used_emails:
+        logger.info('[Task %d] Duplicate email across companies, clearing: %s', task_id, email)
+        email = ''
+    if phone and phone in used_phones:
+        logger.info('[Task %d] Duplicate phone across companies, clearing: %s', task_id, phone)
+        phone = ''
+    return email, phone

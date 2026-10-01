@@ -18,38 +18,37 @@ ALREADY TRIED - DO NOT REPEAT THESE:
     if any(word in industry_lower for word in broad_triggers):
         industry_guidance = f"""
 SPECIAL INTERPRETATION:
-"{industry}" is a BROAD category, not a specific business type. It means: include businesses of ALL industrial/manufacturing types in this area - auto components, pharma, food processing, packaging, plastics, textiles, engineering, chemicals, warehouses, fabrication units, etc.
+"{industry}" is a BROAD category, not a specific business type. It means: include businesses of ALL types in this area across the full industry spectrum - manufacturing, food processing, chemicals, engineering, packaging, textiles, pharma, hospitality, services, etc.
 """
     return f"""You are a professional business research analyst working on ground-level market research.
 
 TASK: Find {count} real, currently operating businesses matching "{industry}" located in {location}.
 {industry_guidance}
-This must work for ANY industry - hotels, restaurants, hospitals, schools, real estate, IT, manufacturing, retail, transport, services, etc.
+The industry may be any standard category: Agriculture, Automotive, Aerospace, BFSI, Biotechnology, Chemicals, Construction, Consulting, Education, Energy, Food Processing, Gaming, Healthcare, Hospitality, IT, Logistics, Manufacturing, Media, Mining, Oil & Gas, Pharmaceuticals, Real Estate, Restaurants/QSR, Retail, Telecom, Textiles, Waste Management - handle ANY of them.
 
 STRICT VERIFICATION RULES:
 1. Every business MUST be physically located in {location}. A brand merely serving {location} from another city is NOT acceptable.
-2. If a business is part of a national/international chain, identify the specific {location} branch/property and prefer its dedicated website or property page.
-3. Never include businesses whose main presence is in another city, even if the same brand name is common.
-4. Only include businesses you are confident actually exist in {location}. Do not invent or guess.
-5. The location "{location}" may be a specific area, road, or industrial zone within a larger city. Businesses MUST be located IN that exact area/zone. Pithampur Industrial Area ≠ Sanwer Road Industrial Area ≠ Vijay Nagar - these are separate zones even if all in Indore city.
-6. Prefer businesses with their own working website (independent businesses, local brands, franchises) over only big national chains.
-7. "{location}" me jo area/district specified hai (e.g. Pithampur vs Sanwer Road vs Vijay Nagar - these are DIFFERENT industrial zones), businesses MUST belong to THAT specific zone. A company in a neighboring industrial zone is NOT acceptable even if in the same city.
+2. The location "{location}" may be a specific area, road, or industrial zone within a larger city. Businesses MUST be located IN that exact area/zone. Pithampur Industrial Area ≠ Sanwer Road Industrial Area ≠ Vijay Nagar - these are separate zones even if all in Indore city.
+3. Only include businesses you are confident actually exist in {location}. Do not invent or guess.
+4. WEBSITE FIELD - STRICT RULE: the website value MUST be the business's OWN official website (its own domain). NEVER provide a directory, listing, aggregator, marketplace, social media, or third-party page as the website - e.g. NEVER Zomato, JustDial, IndiaMART, TradeIndia, Cataloxy, Wanderlog, EazyDiner, LinkedIn, Facebook, clutch.co or any similar site. If the business has no own website, use empty string "".
+5. A business operating INSIDE another business (a restaurant inside a hotel, an outlet inside a mall) must NOT inherit the parent business's website or contact details. If it has no own website, use empty string "".
+6. Do not repeat the same business twice, even under slightly different names.
 {exclude_block}
 For each business provide:
 - company_name: exact business name
-- website: official website URL if it has one. Many small industrial units have no website - for these, still include the business (website field empty string "") IF you are confident about its exact name and location.
+- website: official website URL (own domain only) or empty string ""
 - description: one line about what the business does
-- contact_page: contact or location page URL if known
+- contact_page: contact page URL on the official website if known, else empty string ""
 
 Respond ONLY with a valid JSON array:
 [{{"company_name": "...", "website": "https://...", "description": "...", "contact_page": "https://..."}}]"""
 
 
 def contact_extraction_prompt(company_name: str, location: str, page_text: str) -> str:
-    return f"""Extract contact information for the business "{company_name}" from this webpage text. The business is located in {location}.
+    return f"""Extract contact information for the business "{company_name}" from this webpage text. This text comes from the business's OWN official website.
 
 RULES:
-- email: official email physically present on the page. Prefer info@, contact@, sales@, reservations@, office@ over personal or career emails. Exclude career/job emails unless nothing else exists. NEVER use template/placeholder emails like info@your-business-name.com, yourname@domain.com — these are developer leftovers, not real contacts.
+- email: official email physically present on the page. Prefer info@, contact@, sales@, office@ over personal or career emails. Exclude career/job emails unless nothing else exists. NEVER use template/placeholder emails like info@your-business-name.com — developer leftovers, not real contacts. NEVER report a parent brand's central reservation email (e.g. centralreservations@hotelbrand.com for one restaurant inside that hotel).
 - phone: Indian phone numbers only (+91 format or 10-digit starting with 6-9). If multiple numbers exist, pick the one associated with {location}.
 - address: the complete postal address of the {location} premises only - building/street, area, city, state, 6-digit pincode. If the page shows multiple office addresses, pick ONLY the one in {location}. Copy it as one clean readable line exactly as written. Empty string if no {location} address appears on the page.
 - Never fabricate any value. Use empty string when a field is not found.
@@ -61,20 +60,31 @@ Webpage text:
 {page_text[:3000]}"""
 
 
-def contact_search_prompt(company_name: str, location: str) -> str:
+def contact_search_prompt(company_name: str, location: str,
+                          official_domain: str = '') -> str:
+    domain_block = ''
+    if official_domain:
+        domain_block = f"""
+OFFICIAL DOMAIN RULE (HIGHEST PRIORITY):
+The company's official website domain is: {official_domain}
+Trust and report contact details ONLY if they come from this official domain or are clearly published by the company itself. Contact details found on ANY third-party source - directories (Zomato, JustDial, IndiaMART, Wanderlog, EazyDiner), aggregators, review sites, social media, or any other domain - are NOT acceptable. Report empty strings for those, even if the details look correct.
+"""
     return f"""Search the web for the business "{company_name}" located in {location}.
 
-Find its publicly listed contact details from official sites or business directories.
+Find its publicly listed contact details from ITS OWN OFFICIAL WEBSITE only.
 
+{domain_block}
 STRICT RULES:
-- phone: official publicly listed Indian phone number for its {location} premises
-- email: official publicly listed email, if any
+- Third-party sources (Zomato, EazyDiner, JustDial, IndiaMART, Wanderlog, hotel websites, any directory or aggregator) are FORBIDDEN as data sources. They show MULTIPLE businesses together and their contacts often belong to the directory or a DIFFERENT business.
+- phone: official Indian phone number for its {location} premises, from official sources only
+- email: official email from official sources only. NEVER a parent brand's central reservation email (e.g. centralreservations@hotelbrand.com for one restaurant inside that hotel).
 - address: full postal address of the {location} premises - street, area, city, state, 6-digit pincode
-- Report ONLY details actually found in search results. Never guess or fabricate.
+- Report ONLY details actually found. Never guess or fabricate.
 - Empty string for any field not found.
 
 Respond ONLY with valid JSON:
 {{"email": "", "phone": "", "address": ""}}"""
+
 
 def key_persons_prompt(company_name: str, page_text: str,
                        linkedin_urls: list[str] = None) -> str:
@@ -106,10 +116,6 @@ Respond ONLY with valid JSON:
 
 Webpage text:
 {page_text[:4000]}"""
-
-
-
-
 
 
 def key_persons_search_prompt(company_name: str, location: str, snippets: str,
@@ -144,6 +150,24 @@ Search results:
 
 
 
+def linkedin_profile_extraction_prompt(person_name: str, page_text: str) -> str:
+    return f"""From this LinkedIn profile page text of "{person_name}", extract their contact details.
+
+STRICT RULES:
+- First VERIFY this profile actually belongs to "{person_name}".
+- The name in the page text must match the person's name.
+- If it's a different person or the page is a login wall, respond with empty values.
+- email: ONLY if physically present in the text (typically in About/Contact section). Empty string otherwise.
+- phone: ONLY if physically present. Indian numbers preferred, but any format is accepted. Empty string otherwise.
+- Never fabricate.
+- Empty strings are the normal outcome — most profiles don't show contact details.
+
+Respond ONLY with valid JSON:
+{{"is_match": true, "email": "", "phone": ""}}
+
+Page text:
+{page_text[:2500]}
+"""
 
 
 
@@ -151,13 +175,39 @@ Search results:
 
 
 
+def outreach_email_prompt(company_name: str, industry: str, location: str,
+                          website_text: str, sender_info: dict) -> str:
+    return f"""You are a professional B2B outreach specialist writing on behalf of {sender_info['company_name']}.
 
+SENDER IDENTITY (use this naturally in the email body):
+- Company: {sender_info['company_name']}
+- Website: {sender_info['website']}
 
+TARGET COMPANY: {company_name}
+INDUSTRY: {industry}
+LOCATION: {location}
 
+COMPANY WEBSITE CONTENT (scraped from their official website):
+{website_text if website_text.strip() else 'No website content was available.'}
 
+TASK:
+Step 1 - Analyze the company: what it does, its products/services, and what makes it notable. Use ONLY the website content above. If the content is insufficient, make no specific claims about the company and keep the analysis general.
 
+Step 2 - Write a professional B2B outreach email:
+- Reference their actual business naturally in the opening (only what the analysis supports)
+- Introduce {sender_info['company_name']} as a provider of professional business services relevant to their industry
+- Keep the value proposition relevant to what this specific company does
+- Include a clear, low-pressure call to action (a brief conversation)
+- Professional business English, 120-180 words for the body
+- No spammy patterns, no exaggerated claims, no fake urgency, no excessive flattery
+- Never invent specific details about the company that are not supported by the website content
 
+FORMATTING RULES (STRICT):
+- Greeting: use "Dear {company_name} Team," — NEVER placeholders like [Recipient Name], [First Name] or [Name]
+- Refer to the sender as "{sender_info['company_name']}" in the body — NEVER placeholders like [Your Company Name] or [Our Company]
+- Do NOT add any signature, sign-off, sender name, phone or email at the end — the signature is appended automatically. End the body with the call-to-action paragraph.
+- No placeholder brackets of any kind anywhere in the subject or body.
 
-
-
+Respond ONLY with valid JSON:
+{{"analysis": "one paragraph about what the company does", "subject": "email subject line", "body": "full email body text without the signature"}}"""
 

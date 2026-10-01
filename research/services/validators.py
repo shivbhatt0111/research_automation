@@ -282,12 +282,22 @@ DIRECTORY_DOMAINS = (
     'cataloxy.in', 'justdial.com', 'indiamart.com', 'tradeindia.com',
     'sulekha.com', 'yellowpages', 'glassdoor', 'indeed.com',
     'zaggor.com', 'compactleader.com', 'bizzlane.com',
-    'idbf.in',                          # industrial directory portal
-    'environmentclearance.nic.in',      # govt PDF portal
-    'nic.in', 'gov.in',                 # sarkari portals - not company sites
+    'idbf.in', 'environmentclearance.nic.in', 'nic.in', 'gov.in',
     'mca.gov.in', 'zauba.com', 'tofler.in', 'falconebiz.com',
     'indianfilings.com', 'companycheck',
+    # Restaurant/travel/food directories — listing pages with MANY businesses
+    'zomato.com', 'eazydiner.com', 'wanderlog.com', 'venuelook.com',
+    'indoreonline.in', 'magicpin.com', 'dineout.co.in', 'swiggy.com',
+    'tripadvisor.', 'yelp.com', 'foodpanda.',
+    # B2B/agency directories
+    'clutch.co', 'goodfirms.co', 'designrush.com', 'manta.com',
+    'hotfrog.', 'brownbook.net', 'upwork.com', 'fiverr.com',
+    # Social media - never official websites
+    'linkedin.com', 'facebook.com', 'instagram.com', 'twitter.com',
+    'x.com', 'youtube.com',
 )
+
+
 
 COMMON_EMAIL_PROVIDERS = (
     'gmail.com', 'yahoo.com', 'yahoo.co.in', 'hotmail.com', 'outlook.com',
@@ -332,3 +342,27 @@ def verify_specific_location(address: str, location: str) -> bool | None:
     # Area keyword NAHI mila - lekin pincode toh check hi kar lo
     # (address mein sirf 'Indore' likha ho toh bhi FAIL - kyunki area specific mangi thi)
     return False
+
+
+
+
+
+# ---------- Official-domain strict validation ----------
+
+def email_matches_official_domain(email: str, website_url: str) -> bool:
+    """STRICT: search-rescued emails are accepted ONLY when their domain
+    matches the company's official website domain. Common providers (gmail
+    etc.) can NOT be verified as official - rejected for rescued data."""
+    if not email or not website_url or '@' not in email:
+        return False
+    email_domain = email.split('@')[-1].lower()
+    site = normalize_website(website_url)
+    if not site or email_domain in COMMON_EMAIL_PROVIDERS:
+        return False
+    return email_domain in site or site in email_domain
+
+
+def is_social_media_url(url: str) -> bool:
+    domain = normalize_website(url)
+    return any(s in domain for s in ('facebook.com', 'instagram.com', 'linkedin.com',
+                                     'twitter.com', 'x.com', 'youtube.com'))

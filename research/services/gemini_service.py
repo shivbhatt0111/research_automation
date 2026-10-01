@@ -1,19 +1,28 @@
 import json
 import logging
 
+from django.conf import settings
+
 from .gemini_client import GeminiClient, GeminiClientError
 from .llm_providers import LLMError, LLMRouter
+from .crawler_service import CrawlerService
 from .prompts import (
     company_discovery_prompt,
     contact_extraction_prompt,
     contact_search_prompt,
     key_persons_prompt,
+    linkedin_profile_extraction_prompt,
 )
 from .search_service import SearchService
-from .validators import clean_address, clean_email, has_mx_record, is_relevant_email, to_indian_format
 from .validators import (
-    clean_address, clean_email, has_mx_record, is_relevant_email,
-    linkedin_matches_name, person_email_matches_name, to_indian_format,
+    clean_address,
+    clean_email,
+    email_matches_official_domain,
+    has_mx_record,
+    is_relevant_email,
+    linkedin_matches_name,
+    person_email_matches_name,
+    to_indian_format,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,48 +86,41 @@ class GeminiService:
 
         return {'email': email, 'phone': phone, 'address': address}
 
-    def search_contacts(self, company_name: str, location: str) -> dict:
-        """Contact rescue via live search. DDG+Groq first (free, reliable),
-        Gemini grounding as backup."""
-        data = self.search.search_contacts(company_name, location) or {}
-        if not any(data.values()):
-            # Gemini grounding likely exhausted - only try once per process
-            from django.core.cache import cache as django_cache
+    def search_contacts(self, company_name: str, location: str,
+                        official_domain: str = '') -> dict:
+        """Contact rescue - STRICT OFFICIAL-ONLY. Rescued email must match
+        the official domain; third-party sources are rejected."""
+        data = self.search.search_contacts(company_name, location, official_domain) or {}
 
-            if django_cache.get("gemini:grounding_probe_failed") is None:
-                prompt = contact_search_prompt(company_name, location)
-
-                try:
-                    data = self._parse_json(
-                        self.client.generate(
-                            prompt,
-                            use_search=True,
-                            require_search=True,
-                        )
-                    )
-                except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
-                    django_cache.set(
-                        "gemini:grounding_probe_failed",
-                        True,
-                        timeout=300,
-                    )
-                    logger.warning(
-                        "Gemini contact search failed for %s: %s. "
-                        "Skipping grounding for 5 min.",
-                        company_name,
-                        exc,
-                    )
-                    return {}
-                
+        if not any(data.values()) and getattr(settings, 'STRICT_OFFICIAL_ONLY', True) is False:
+            # Loose mode only: Gemini grounding fallback allowed
+            prompt = contact_search_prompt(company_name, location)
+            try:
+                data = self._parse_json(
+                    self.client.generate(prompt, use_search=True, require_search=True)
+                )
+            except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
+                logger.warning('Gemini contact search failed for %s: %s', company_name, exc)
+                return {}
 
         email = clean_email(data.get('email', ''))
         if email and (not is_relevant_email(email) or not has_mx_record(email)):
+            email = ''
+        # STRICT: rescued email must belong to the official domain
+        if email and official_domain and not email_matches_official_domain(email, official_domain):
+            logger.info('Rescued email rejected (domain mismatch): %s', email)
             email = ''
 
         phone = to_indian_format(data.get('phone', '')) or ''
         address = clean_address(data.get('address', '')) or ''
 
         return {'email': email, 'phone': phone, 'address': address}
+
+
+
+
+
+
 
     def extract_key_persons(self, company_name: str, page_text: str,
                             linkedin_urls: list[str] = None) -> list[dict]:
@@ -218,7 +220,43 @@ class GeminiService:
 
 
 
+    def extract_person_contacts_from_linkedin(self, person_name: str,
+                                              linkedin_url: str) -> dict:
+        """Opens a key person's LinkedIn profile (public content) and extracts
+        email/phone IF the person published them there. Strict name match."""
+        if not linkedin_url or 'linkedin.com/in/' not in linkedin_url:
+            return {}
 
+        try:
+            page_text = CrawlerService().crawl_single_url(linkedin_url)
+        except Exception as exc:
+            logger.warning('LinkedIn crawl failed for %s: %s', person_name, exc)
+            return {}
+
+        if not page_text:
+            return {}
+
+        from .prompts import linkedin_profile_extraction_prompt
+        prompt = linkedin_profile_extraction_prompt(person_name, page_text)
+
+        try:
+            data = self._parse_json(self.router.generate(prompt))
+        except (GeminiClientError, LLMError, json.JSONDecodeError, TypeError):
+            logger.warning('LinkedIn profile extraction failed for %s', person_name)
+            return {}
+
+        # Name match verify - AI ka is_match + hamara apna check
+        if not data.get('is_match'):
+            logger.info('LinkedIn profile name mismatch for %s, skipping', person_name)
+            return {}
+
+        email = clean_email(data.get('email', ''))
+        if email and (not is_relevant_email(email) or not has_mx_record(email)):
+            email = ''
+
+        phone = to_indian_format(data.get('phone', '')) or ''
+
+        return {'email': email, 'phone': phone}
 
 
 

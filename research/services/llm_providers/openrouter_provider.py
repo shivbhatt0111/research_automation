@@ -2,6 +2,7 @@ import logging
 import time
 
 from django.conf import settings
+from django.core.cache import cache
 
 import requests
 
@@ -11,8 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterProvider(BaseLLMProvider):
-    """OpenRouter free-models pool. Daily limits reset every day.
-    Rotates through multiple free models - one exhausted, next is tried."""
+    """OpenRouter with multi-key rotation + multi-model fallback."""
 
     name = 'openrouter'
     FREE_MODELS = [
@@ -23,44 +23,71 @@ class OpenRouterProvider(BaseLLMProvider):
     ]
     TIMEOUT = 90
 
-    def generate(self, prompt: str) -> str:
-        if not settings.OPENROUTER_API_KEY:
-            raise LLMError('No OpenRouter API key configured')
+    def _keys(self) -> list[str]:
+        keys = [k for k in getattr(settings, 'OPENROUTER_API_KEYS', []) if k]
+        if not keys:
+            raise LLMError('No OpenRouter API keys configured')
+        return keys
 
-        headers = {
-            'Authorization': f'Bearer {settings.OPENROUTER_API_KEY}',
-            'Content-Type': 'application/json',
-        }
+    def _next_key(self) -> str:
+        keys = self._keys()
+        for _ in range(len(keys)):
+            index = cache.get('openrouter:key_index', -1)
+            index = (index + 1) % len(keys)
+            cache.set('openrouter:key_index', index, timeout=None)
+            if cache.get(f'openrouter:exhausted:{index}') is None:
+                return keys[index]
+        return keys[0]
+
+    def _cooldown_last(self) -> None:
+        index = cache.get('openrouter:key_index', -1)
+        if index >= 0:
+            cache.set(f'openrouter:exhausted:{index}', True, timeout=3600)
+            logger.warning('OpenRouter key #%d cooldown 1h (daily limit)', index + 1)
+
+    def generate(self, prompt: str) -> str:
+        keys = self._keys()
+        headers_base = {'Content-Type': 'application/json'}
 
         last_error = None
+        # Har key pe saare free models try (key rotation + model rotation)
         for model in self.FREE_MODELS:
-            try:
-                resp = requests.post(
-                    'https://openrouter.ai/api/v1/chat/completions',
-                    headers=headers,
-                    json={
-                        'model': model,
-                        'messages': [{'role': 'user', 'content': prompt}],
-                        'temperature': 0.1,
-                        'max_tokens': 3000,
-                    },
-                    timeout=self.TIMEOUT,
-                )
+            for attempt in range(len(keys)):
+                api_key = self._next_key()
+                headers = dict(headers_base, Authorization=f'Bearer {api_key}')
+                try:
+                    resp = requests.post(
+                        'https://openrouter.ai/api/v1/chat/completions',
+                        headers=headers,
+                        json={
+                            'model': model,
+                            'messages': [{'role': 'user', 'content': prompt}],
+                            'temperature': 0.1,
+                            'max_tokens': 3000,
+                        },
+                        timeout=self.TIMEOUT,
+                    )
 
-                if resp.status_code == 429:
-                    logger.warning('OpenRouter %s rate-limited, trying next model', model)
-                    last_error = f'{model}: 429'
+                    if resp.status_code == 429:
+                        # Is model pe daily limit - cooldown + agla model
+                        self._cooldown_last()
+                        last_error = f'{model}: 429'
+                        logger.warning('OpenRouter %s rate-limited, next model', model)
+                        break  # is model se aage nahi, next model
+
+                    resp.raise_for_status()
+                    content = resp.json()['choices'][0]['message']['content']
+                    if not content:
+                        raise LLMError('Empty response from OpenRouter')
+                    logger.info('OpenRouter succeeded via %s', model)
+                    return content
+
+                except LLMError:
+                    raise
+                except Exception as exc:
+                    last_error = f'{model}: {exc}'
+                    logger.warning('OpenRouter %s attempt failed: %s', model, exc)
+                    time.sleep(1)
                     continue
 
-                resp.raise_for_status()
-                content = resp.json()['choices'][0]['message']['content']
-                if not content:
-                    raise LLMError('Empty response from OpenRouter')
-                return content
-
-            except Exception as exc:
-                logger.warning('OpenRouter %s failed: %s', model, exc)
-                last_error = f'{model}: {exc}'
-                continue
-
-        raise LLMError(f'All OpenRouter free models failed: {last_error}')  
+        raise LLMError(f'All OpenRouter keys/models failed: {last_error}')

@@ -96,3 +96,29 @@ class CrawlerService:
             'linkedin_urls': linkedin_urls[:10],
             'pages': pages,
         }
+        
+    def crawl_single_url(self, url: str) -> str:
+        """Crawls one URL with JS rendering. Returns text or empty string."""
+        if not url:
+            return ''
+
+        async def _crawl():
+            from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+
+            browser_cfg = BrowserConfig(headless=True, browser_type='chromium')
+            run_cfg = CrawlerRunConfig(
+                cache_mode=CacheMode.BYPASS,
+                page_timeout=self.timeout_ms,
+                wait_for='body',
+            )
+            async with AsyncWebCrawler(config=browser_cfg) as crawler:
+                result = await crawler.arun(url=url, config=run_cfg)
+                if result.success and result.markdown:
+                    return result.markdown[:4000]
+                return ''
+
+        try:
+            return self._run(_crawl())
+        except Exception as exc:
+            logger.info('Crawl4AI single-URL failed for %s: %s', url, exc)
+            return ''

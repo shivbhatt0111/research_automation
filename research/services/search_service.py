@@ -41,19 +41,26 @@ class SearchService:
 
     def __init__(self):
         self.router = LLMRouter()
-        self.tavily_key = getattr(settings, 'TAVILY_API_KEY', '')
         self._tavily_client = None
+        self._tavily_index = -1
 
     @property
     def tavily(self):
-        if self.tavily_key and self._tavily_client is None:
+        keys = [k for k in getattr(settings, 'TAVILY_API_KEYS', []) if k]
+        if not keys:
+            return None
+        if self._tavily_client is None:
             try:
                 from tavily import TavilyClient
-                self._tavily_client = TavilyClient(api_key=self.tavily_key)
+                # Round-robin: har SearchService instance alag key se start
+                self._tavily_index = (self._tavily_index + 1) % len(keys)
+                self._tavily_client = TavilyClient(api_key=keys[self._tavily_index])
             except Exception as exc:
                 logger.warning('Tavily init failed: %s', exc)
                 self._tavily_client = False
         return self._tavily_client or None
+    
+    
 
     @staticmethod
     def _ddg_results(query: str, max_results: int) -> list[dict]:
@@ -159,33 +166,44 @@ Respond ONLY with a JSON array, maximum {count} items, no explanations:
 
 
 
-    def search_contacts(self, company_name: str, location: str) -> dict:
+    def search_contacts(self, company_name: str, location: str,
+                        official_domain: str = '') -> dict:
+        # STRICT OFFICIAL-ONLY: scope queries to the official domain
+        if official_domain:
+            queries = (
+                f'"{company_name}" contact site:{official_domain}',
+                f'site:{official_domain} phone email address',
+            )
+        else:
+            queries = (f'"{company_name}" {location} phone email address contact',)
+
         snippets = [
             f"{r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}"
-            for r in self._results(f'"{company_name}" {location} phone email address contact', 8)
+            for q in queries
+            for r in self._results(q, 8)
         ]
         if not snippets:
             return {}
 
         context = '\n---\n'.join(snippets)
-        prompt = f"""From these live web search results about "{company_name}" ({location}), extract its publicly listed contact details.
+        from .prompts import contact_search_prompt
+        prompt = contact_search_prompt(company_name, location, official_domain)
 
-RULES:
-- Only details actually present in the results. Never guess.
-- Prefer the {location} branch contact over other cities.
-- Empty string if not found.
-
-Respond ONLY with a JSON object, no explanations:
-{{"email": "", "phone": "", "address": ""}}
-
-Search results:
-{context}"""
+        # Note: prompt already contains the full rules; context added below it
+        prompt = prompt.replace(
+            'Respond ONLY with a JSON object, no explanations:',
+            f'Search results:\n{context}\n\nRespond ONLY with a JSON object, no explanations:'
+        ) if 'Search results:' not in prompt else prompt
 
         try:
             return self._parse_json(self.router.generate(prompt))
         except (LLMError, json.JSONDecodeError, TypeError) as exc:
             logger.warning('Search contact extraction failed for %s: %s', company_name, exc)
             return {}
+
+
+
+
 
     def search_key_persons(self, company_name: str, location: str) -> dict:
         from .prompts import key_persons_search_prompt

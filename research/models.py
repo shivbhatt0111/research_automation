@@ -50,6 +50,17 @@ class CompanyContact(models.Model):
     is_verified = models.BooleanField(default=False)
     is_selected = models.BooleanField(default=False)
     normalized_name = models.CharField(max_length=255, db_index=True)
+    # Email campaign tracking
+    is_mail_sent = models.BooleanField(default=False)
+    email_draft_subject = models.TextField(blank=True)
+    email_draft_body = models.TextField(blank=True)
+    mail_draft_date = models.DateField(null=True, blank=True)
+    mail_sent_at = models.DateTimeField(null=True, blank=True)
+    mail_sent_to = models.EmailField(blank=True)
+    campaign = models.ForeignKey(
+        'EmailCampaign', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='contacts'
+    )
 
     class Meta:
         unique_together = ('task', 'normalized_name')
@@ -72,3 +83,35 @@ class KeyPerson(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.company_id})'
+    
+    
+    
+class EmailCampaign(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        DRAFTING = 'DRAFTING', 'Drafting'
+        SCHEDULED = 'SCHEDULED', 'Scheduled'
+        SENDING = 'SENDING', 'Sending'
+        COMPLETED = 'COMPLETED', 'Completed'
+        FAILED = 'FAILED', 'Failed'
+        PAUSED = 'PAUSED', 'Paused'
+
+    industry = models.CharField(max_length=200)
+    location = models.CharField(max_length=200)
+    requested_count = models.PositiveIntegerField()
+    scheduled_send_date = models.DateField(null=True, blank=True)
+    sent_count = models.PositiveIntegerField(default=0)
+    failed_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Campaign {self.id} | {self.industry} | {self.status}'

@@ -1,20 +1,35 @@
 import logging
-
+import re
+from datetime import timedelta
+from django.utils import timezone
+from django.conf import settings
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CompanyContact, ResearchTask
+from .models import CompanyContact, EmailCampaign, ResearchTask
 from .serializers import (
     CompanyContactSerializer,
     CreateResearchSerializer,
     ResearchTaskSerializer,
 )
+from .services.email_campaign_service import EmailCampaignService
 from .tasks import run_company_research
+from .campaign_tasks import run_email_campaign
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 
 
 class CreateResearchView(APIView):
@@ -161,3 +176,225 @@ class CompanyDetailView(APIView):
     def get(self, request, company_id: int):
         contact = get_object_or_404(CompanyContact, id=company_id)
         return Response(CompanyContactSerializer(contact).data)
+    
+    
+    
+class TaskDeleteView(APIView):
+    """GET ya DELETE /api/delete-task/<task_id>/ — task_id do, uska
+    SAARA data delete: task + contacts + key persons. Permanent."""
+
+    def get(self, request, task_id: int):
+        return self._delete(request, task_id)
+
+    def delete(self, request, task_id: int):
+        return self._delete(request, task_id)
+
+    def _delete(self, request, task_id: int):
+        task = get_object_or_404(ResearchTask, id=task_id)
+        contacts_count = task.contacts.count()
+        persons_count = sum(c.key_persons.count() for c in task.contacts.all())
+
+        task.delete()   # CASCADE: contacts + key persons automatically delete hote hain
+
+        logger.info('Deleted task %d (%d contacts, %d key persons)', task_id, contacts_count, persons_count)
+        return Response({
+            'message': f'Task {task_id} ka saara data delete ho gaya',
+            'deleted_task': task_id,
+            'deleted_contacts': contacts_count,
+            'deleted_key_persons': persons_count,
+        })
+        
+        
+        
+        
+        
+    
+
+
+
+class CreateEmailCampaignView(APIView):
+    """POST /api/email-campaign/ — starts an email campaign with a
+    pre-flight daily quota check."""
+
+    def post(self, request):
+        industry = request.data.get('industry', '').strip()
+        location = request.data.get('location', '').strip()
+        number_of_emails = request.data.get('number_of_emails')
+
+        if not industry or not location:
+            return Response(
+                {'error': 'industry and location are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        number_of_emails = _safe_int(number_of_emails, 10)
+        number_of_emails = min(100, max(1, number_of_emails))
+
+        # Pre-flight quota check (Level 1)
+        service = EmailCampaignService()
+        sent_today = service.sent_today_count()
+        remaining_today = service.remaining_quota()
+
+        if number_of_emails > remaining_today:
+            return Response({
+                'error': 'DAILY QUOTA EXCEEDED',
+                'message': (
+                    f'You can send only {remaining_today} more emails today. '
+                    f'Gmail daily limit: {settings.EMAIL_DAILY_LIMIT}. '
+                    f'Quota resets at midnight. Reduce number_of_emails or try tomorrow.'
+                ),
+                'daily_limit': settings.EMAIL_DAILY_LIMIT,
+                'sent_today': sent_today,
+                'remaining_today': remaining_today,
+                'requested': number_of_emails,
+            }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+        # Eligible company availability check
+        eligible = CompanyContact.objects.filter(
+            email__gt='', is_mail_sent=False,
+        ).filter(
+            Q(task__industry__icontains=industry) | Q(address__icontains=industry)
+        ).filter(
+            Q(task__location__icontains=location) | Q(address__icontains=location)
+        ).count()
+
+        if eligible == 0:
+            return Response({
+                'error': 'NO ELIGIBLE COMPANIES',
+                'message': (
+                    'No companies match these filters that have an email and '
+                    'have not been contacted yet. Run a research task first or '
+                    'adjust the filters.'
+                ),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Scheduled send date
+        now = timezone.localtime(timezone.now())
+        send_h, send_m = map(int, settings.EMAIL_SEND_TIME.split(':'))
+        today_slot = now.replace(hour=send_h, minute=send_m, second=0, microsecond=0)
+        scheduled_date = now.date() if now < today_slot else (now + timedelta(days=1)).date()
+
+        campaign = EmailCampaign.objects.create(
+            industry=industry,
+            location=location,
+            requested_count=min(number_of_emails, eligible),
+            scheduled_send_date=scheduled_date,
+            status=EmailCampaign.Status.PENDING,
+        )
+        run_email_campaign.delay(campaign.id)
+
+        scheduled_display = scheduled_date.strftime('%d %b %Y') + f', {settings.EMAIL_SEND_TIME} IST'
+        return Response({
+            'message': 'Email campaign started. Drafts are generating now and will be sent at the scheduled time.',
+            'campaign_id': campaign.id,
+            'companies_selected': min(number_of_emails, eligible),
+            'eligible_companies': eligible,
+            'scheduled_send_time': scheduled_display,
+            'send_mode': settings.SEND_MODE,
+            'status_url': f'/api/email-campaign/{campaign.id}/status/',
+        }, status=status.HTTP_202_ACCEPTED)
+
+
+class EmailCampaignStatusView(APIView):
+    """GET /api/email-campaign/<campaign_id>/status/ — progress + drafts."""
+
+    def get(self, request, campaign_id: int):
+        campaign = get_object_or_404(EmailCampaign, id=campaign_id)
+        contacts = campaign.contacts.order_by('id')
+
+        emails = [
+            {
+                'company_name': c.company_name,
+                'website': c.website,                    
+                'company_email': c.email,               
+                'intended_recipient': c.email,           # (kept for compatibility)
+                'sent_to': c.mail_sent_to,
+                'is_sent': c.is_mail_sent,
+                'subject': c.email_draft_subject,
+                'body': c.email_draft_body,
+            }
+            for c in contacts
+        ]
+
+        duration = None
+        if campaign.duration_seconds is not None:
+            m, s = divmod(campaign.duration_seconds, 60)
+            h, m = divmod(m, 60)
+            duration = f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+
+        created = campaign.created_at.astimezone(
+            timezone.get_current_timezone()
+        ).strftime('%d %b %Y, %I:%M:%S %p IST') if campaign.created_at else None
+
+        return Response({
+            'id': campaign.id,
+            'industry': campaign.industry,
+            'location': campaign.location,
+            'status': campaign.status,
+            'requested_count': campaign.requested_count,
+            'sent_count': campaign.sent_count,
+            'failed_count': campaign.failed_count,
+            'scheduled_send_date': str(campaign.scheduled_send_date) if campaign.scheduled_send_date else None,
+            'send_mode': settings.SEND_MODE,
+            'error_message': campaign.error_message,
+            'created_at': created,
+            'duration': duration,
+            'emails': emails,
+        })
+
+
+class EmailCampaignListView(APIView):
+    """GET /api/email-campaign/list/ — all campaigns."""
+
+    def get(self, request):
+        campaigns = EmailCampaign.objects.all()[:50]
+        return Response({
+            'total': campaigns.count(),
+            'campaigns': [
+                {
+                    'id': c.id,
+                    'industry': c.industry,
+                    'location': c.location,
+                    'status': c.status,
+                    'requested_count': c.requested_count,
+                    'sent_count': c.sent_count,
+                    'failed_count': c.failed_count,
+                    'scheduled_send_date': str(c.scheduled_send_date) if c.scheduled_send_date else None,
+                }
+                for c in campaigns
+            ]
+        })
+        
+        
+        
+class CampaignDeleteView(APIView):
+    """GET ya DELETE /api/delete-campaign/<campaign_id>/ — campaign_id do,
+    campaign delete ho jayega. Uski contacts (CompanyContact rows) safe
+    rehti hain - sirf campaign link hatta hai, taaki data loss na ho."""
+
+    def get(self, request, campaign_id: int):
+        return self._delete(request, campaign_id)
+
+    def delete(self, request, campaign_id: int):
+        return self._delete(request, campaign_id)
+
+    def _delete(self, request, campaign_id: int):
+        campaign = get_object_or_404(EmailCampaign, id=campaign_id)
+
+        linked_contacts = campaign.contacts.all()
+        contacts_count = linked_contacts.count()
+        linked_contacts.update(
+            campaign=None,
+            is_mail_sent=False,
+            email_draft_subject='',
+            email_draft_body='',
+            mail_draft_date=None,
+        )
+
+        campaign.delete()
+
+        logger.info('Deleted campaign %d (%d linked contacts unlinked)', campaign_id, contacts_count)
+        return Response({
+            'message': f'Campaign {campaign_id} deleted successfully',
+            'deleted_campaign': campaign_id,
+            'unlinked_contacts': contacts_count,
+        })
