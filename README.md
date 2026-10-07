@@ -50,3 +50,32 @@ celery -A config beat -l info
 
 # Terminal 4: Django Development Server
 python manage.py runserver
+
+
+
+
+
+
+research_automation/
+│
+├── research/                 # Aapka main Django app
+│   ├── templates/            # HTML files yahan aayengi
+│   │   ── index.html        # Ye hamara main Homepage (SPA Shell) hoga
+│   │
+│   ├── static/               # CSS, JS, Images yahan aayengi
+│   │   ├── css/
+│   │   │   └── custom.css    # Custom styles
+│   │   ├── js/
+│   │   │   ├── app.js        # Main logic
+│   │   │   ├── api.js        # API calls (Fetch)
+│   │   │   └── components/   # UI ke alag-alag hisse
+│   │   │       ├── navbar.js
+│   │   │       └── home.js
+│   │   └── images/           # Logos, icons
+│   │
+│   ├── views.py              # Yahan se index.html render hoga
+│   ├── urls.py               # Homepage ka URL yahan set hoga
+│   └── ... (baaki files)
+│
+├── config/
+└── manage.py

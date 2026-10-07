@@ -1,0 +1,78 @@
+/* =========================================
+   1. Global & Smooth Scrolling
+   ========================================= */
+   html {
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* =========================================
+   2. Custom Animations
+   ========================================= */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fade-in {
+    animation: fadeIn 0.8s ease-out forwards;
+}
+
+/* =========================================
+   3. Custom Scrollbar (Webkit Browsers)
+   ========================================= */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f5f9; /* Slate 100 */
+}
+
+::-webkit-scrollbar-thumb {
+    background: #4F46E5; /* Primary Indigo */
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #4338CA; /* Darker Indigo */
+}
+
+/* =========================================
+   4. Utility Classes
+   ========================================= */
+/* Gradient Text Effect */
+.gradient-text {
+    background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Card Hover Lift Effect */
+.hover-lift {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hover-lift:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+}
+
+/* Glassmorphism Effect (Optional use) */
+.glass {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}

@@ -1,0 +1,56 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Automation - Company Intelligence Platform</title>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Tailwind Configuration -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#4F46E5',
+                        secondary: '#1E293B',
+                        accent: '#06B6D4',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{% static 'css/custom.css' %}">
+    
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-50 text-slate-800 font-sans antialiased">
+
+    <!-- Navigation Bar -->
+    <nav id="navbar"></nav>
+
+    <!-- Main Content -->
+    <main id="app" class="container mx-auto px-4 py-8 min-h-screen">
+        <!-- Loading state before JS kicks in -->
+        <div class="flex justify-center items-center h-64">
+            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary"></div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-6 mt-12">
+        <div class="container mx-auto px-4 text-center text-slate-500 text-sm">
+            &copy; 2026 Research Automation. All rights reserved.
+        </div>
+    </footer>
+
+    <!-- Single Consolidated JavaScript File -->
+    <script src="{% static 'js/app.js' %}"></script>
+</body>
+</html>
