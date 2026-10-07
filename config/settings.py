@@ -136,7 +136,9 @@ OPENROUTER_API_KEYS = [
 ]
 
 
-LLM_DISCOVERY_ORDER = ['gemini', 'groq', 'openrouter']
+# LLM_DISCOVERY_ORDER = ['gemini', 'groq', 'openrouter']
+# LLM_EXTRACTION_ORDER = ['groq', 'openrouter', 'gemini']
+LLM_DISCOVERY_ORDER = ['groq', 'openrouter', 'gemini']
 LLM_EXTRACTION_ORDER = ['groq', 'openrouter', 'gemini']
 
 # Crawl4AI
