@@ -100,15 +100,11 @@ CELERY_TASK_SOFT_TIME_LIMIT = 60 * 18
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 
-
-# Gemini - Multi Key Rotation (5 keys, different accounts)
 GEMINI_API_KEYS = [
-    config('GEMINI_API_KEY_1'),
-    config('GEMINI_API_KEY_2'),
-    config('GEMINI_API_KEY_3'),
-    config('GEMINI_API_KEY_4'),
-    config('GEMINI_API_KEY_5'),
+    config('GEMINI_API_KEY'), 
 ]
+
+
 GEMINI_MODEL_ID = config('GEMINI_MODEL_ID', default='gemini-3.5-flash-lite')
 GEMINI_BACKUP_MODEL_ID = config('GEMINI_BACKUP_MODEL_ID', default='gemini-3.5-flash')
 
@@ -140,11 +136,8 @@ OPENROUTER_API_KEYS = [
 ]
 
 
-# LLM_EXTRACTION_ORDER = ['groq', 'gemini']
-# LLM_DISCOVERY_ORDER = ['gemini', 'groq']
-
+LLM_DISCOVERY_ORDER = ['gemini', 'groq', 'openrouter']
 LLM_EXTRACTION_ORDER = ['groq', 'openrouter', 'gemini']
-LLM_DISCOVERY_ORDER = ['gemini', 'openrouter', 'groq']
 
 # Crawl4AI
 CRAWL4AI_ENABLED = config('CRAWL4AI_ENABLED', default=True, cast=bool)

@@ -232,27 +232,43 @@ PERSON_EMAIL_ROLE_PREFIXES = (
 )
 
 
+
 def linkedin_matches_name(name: str, linkedin_url: str) -> bool:
-    """A LinkedIn URL belongs to a person ONLY when their name tokens
-    appear in the profile slug. 'Manoj Jain' can never own '/in/pragati-patra'."""
+    """
+    STRICT CHECK: A LinkedIn URL belongs to a person ONLY when their 
+    first AND last name tokens appear in the profile slug.
+    """
     if not name or not linkedin_url or 'linkedin.com/in/' not in linkedin_url:
         return False
 
+    # Extract slug: e.g., "https://linkedin.com/in/rajesh-kumar-123" -> "rajesh-kumar-123"
     slug = linkedin_url.rstrip('/').split('/in/')[-1]
-    slug = re.sub(r'[^a-z-]', '', slug.lower())
+    slug = re.sub(r'[^a-z0-9-]', '', slug.lower()) # Keep only letters, numbers, and hyphens
     slug_tokens = {t for t in slug.split('-') if len(t) >= 3}
+    
     if not slug_tokens:
         return False
 
-    name_tokens = [
-        t for t in re.sub(r'[^a-z\s]', '', name.lower()).split()
-        if len(t) >= 3
-    ]
+    # Extract name tokens: e.g., "Rajesh Kumar" -> {"rajesh", "kumar"}
+    name_tokens = {t for t in re.sub(r'[^a-z\s]', '', name.lower()).split() if len(t) >= 3}
+    
     if not name_tokens:
         return False
 
+    # Check how many name tokens exist in the slug
     matches = sum(1 for t in name_tokens if any(t in st for st in slug_tokens))
-    return matches >= 2 or (matches == 1 and len(name_tokens) == 1)
+    
+    # STRICT RULE: At least 2 tokens must match (First + Last name), 
+    # OR if it is a single-word name, that 1 word must match.
+    if len(name_tokens) >= 2 and matches >= 2:
+        return True
+    elif len(name_tokens) == 1 and matches == 1:
+        return True
+        
+    return False
+
+
+
 
 
 def person_email_matches_name(name: str, email: str) -> bool:
@@ -292,6 +308,8 @@ DIRECTORY_DOMAINS = (
     # B2B/agency directories
     'clutch.co', 'goodfirms.co', 'designrush.com', 'manta.com',
     'hotfrog.', 'brownbook.net', 'upwork.com', 'fiverr.com',
+    # Textile/B2B listing pages (new cloth market wala)
+    'newclothmarketonline.com', 'textileinfomedia.com',
     # Social media - never official websites
     'linkedin.com', 'facebook.com', 'instagram.com', 'twitter.com',
     'x.com', 'youtube.com',
@@ -304,10 +322,18 @@ COMMON_EMAIL_PROVIDERS = (
     'rediffmail.com', 'live.com', 'icloud.com', 'protonmail.com',
 )
 
+LISTING_URL_PATTERNS = (
+    '/list/', '/list-of-', '/directory', '/suppliers', '/suppliers/',
+    '/companies', '/best-', '/top-10', '/top-', '/guides/',
+)
+
 
 def is_directory_url(url: str) -> bool:
     domain = normalize_website(url)
-    return any(d in domain for d in DIRECTORY_DOMAINS)
+    if any(d in domain for d in DIRECTORY_DOMAINS):
+        return True
+    path = (url or '').lower()
+    return any(p in path for p in LISTING_URL_PATTERNS)
 
 
 def website_from_email(email: str) -> str:

@@ -3,15 +3,12 @@
 DISCOVERY_EXCLUSION_LIMIT = 30
 
 
-def company_discovery_prompt(industry: str, location: str, count: int,
-                             exclude_names: list[str] = None) -> str:
+def company_discovery_prompt(industry: str, location: str, count: int, exclude_names: list[str] = None) -> str:
     exclude_block = ''
     if exclude_names:
         listed = '\n'.join(f'- {name}' for name in exclude_names[:DISCOVERY_EXCLUSION_LIMIT])
-        exclude_block = f"""
-ALREADY TRIED - DO NOT REPEAT THESE:
-{listed}
-"""
+        exclude_block = f"\nALREADY TRIED - DO NOT REPEAT THESE:\n{listed}\n"
+        
     industry_guidance = ''
     industry_lower = (industry or '').strip().lower()
     broad_triggers = ('industrial', 'all types', 'any type', 'all companies', 'all businesses')
@@ -20,28 +17,33 @@ ALREADY TRIED - DO NOT REPEAT THESE:
 SPECIAL INTERPRETATION:
 "{industry}" is a BROAD category, not a specific business type. It means: include businesses of ALL types in this area across the full industry spectrum - manufacturing, food processing, chemicals, engineering, packaging, textiles, pharma, hospitality, services, etc.
 """
-    return f"""You are a professional business research analyst working on ground-level market research.
 
-TASK: Find {count} real, currently operating businesses matching "{industry}" located in {location}.
-{industry_guidance}
-The industry may be any standard category: Agriculture, Automotive, Aerospace, BFSI, Biotechnology, Chemicals, Construction, Consulting, Education, Energy, Food Processing, Gaming, Healthcare, Hospitality, IT, Logistics, Manufacturing, Media, Mining, Oil & Gas, Pharmaceuticals, Real Estate, Restaurants/QSR, Retail, Telecom, Textiles, Waste Management - handle ANY of them.
+    return f"""You are a strict, professional business research analyst working on ground-level market research.
 
-STRICT VERIFICATION RULES:
-1. Every business MUST be physically located in {location}. A brand merely serving {location} from another city is NOT acceptable.
-2. The location "{location}" may be a specific area, road, or industrial zone within a larger city. Businesses MUST be located IN that exact area/zone. Pithampur Industrial Area ≠ Sanwer Road Industrial Area ≠ Vijay Nagar - these are separate zones even if all in Indore city.
-3. Only include businesses you are confident actually exist in {location}. Do not invent or guess.
-4. WEBSITE FIELD - STRICT RULE: the website value MUST be the business's OWN official website (its own domain). NEVER provide a directory, listing, aggregator, marketplace, social media, or third-party page as the website - e.g. NEVER Zomato, JustDial, IndiaMART, TradeIndia, Cataloxy, Wanderlog, EazyDiner, LinkedIn, Facebook, clutch.co or any similar site. If the business has no own website, use empty string "".
-5. A business operating INSIDE another business (a restaurant inside a hotel, an outlet inside a mall) must NOT inherit the parent business's website or contact details. If it has no own website, use empty string "".
-6. Do not repeat the same business twice, even under slightly different names.
+TASK: Find exactly {count} real, currently operating businesses matching "{industry}" physically located in "{location}".
+
+STRICT BOUNDARY RULE (HIGHEST PRIORITY):
+Under NO circumstances should you return a business located outside of "{location}" or completely unrelated to "{industry}". If a business is in a different city, state, or unrelated sector, REJECT IT IMMEDIATELY. Do not provide "nearby" or "similar" businesses from other regions.
+
+CRITICAL VERIFICATION RULES (VIOLATION = REJECTION):
+1. LOCATION STRICTNESS: Every business MUST be physically located in {location}. The location "{location}" may be a specific area, road, or industrial zone within a larger city. Businesses MUST be located IN that exact area/zone. (e.g., Pithampur Industrial Area ≠ Sanwer Road Industrial Area ≠ Vijay Nagar - these are separate zones even if all are in Indore city).
+2. WEBSITE FIELD - STRICT RULE: The website value MUST be the business's OWN official website (its own domain). NEVER provide a directory, listing, aggregator, marketplace, social media, or third-party page as the website. Banned domains include: justdial.com, indiamart.com, zomato.com, tradeindia.com, sulekha.com, linkedin.com/company, facebook.com, instagram.com, cataloxy.in, newclothmarketonline.com, or ANY site with "/list/", "/directory/", "/companies/" in the URL.
+3. NO WEBSITE FALLBACK: If a business does not have its own official website, you MUST return an empty string "" for the website field. DO NOT guess or substitute with a directory link.
+4. ADDRESS FIELD - STRICT RULE: Do not copy-paste one address onto multiple entries. Each business entry must have its own unique address (or empty string if unknown). One shared address across many entries = directory contamination = hard violation.
+5. UNIQUENESS: Each business entry must have ITS OWN unique website. NEVER assign the same URL to multiple entries. If you found all businesses on one listing page, that listing page is NOT their website.
+6. SUB-BUSINESSES: A business operating INSIDE another business (a restaurant inside a hotel, an outlet inside a mall) must NOT inherit the parent business's website or contact details. If it has no own website, use empty string "".
+7. NO HALLUCINATION: Only include businesses you are confident actually exist in {location}. Do not invent, guess, or repeat the same business twice under slightly different names.
 {exclude_block}
+
 For each business provide:
 - company_name: exact business name
-- website: official website URL (own domain only) or empty string ""
-- description: one line about what the business does
+- website: official website URL (own domain only, unique per business) or empty string ""
+- description: one short line about what the business does
 - contact_page: contact page URL on the official website if known, else empty string ""
 
-Respond ONLY with a valid JSON array:
+Respond ONLY with a valid JSON array. No markdown, no explanations:
 [{{"company_name": "...", "website": "https://...", "description": "...", "contact_page": "https://..."}}]"""
+
 
 
 def contact_extraction_prompt(company_name: str, location: str, page_text: str) -> str:
@@ -86,30 +88,26 @@ Respond ONLY with valid JSON:
 {{"email": "", "phone": "", "address": ""}}"""
 
 
-def key_persons_prompt(company_name: str, page_text: str,
-                       linkedin_urls: list[str] = None) -> str:
+def key_persons_prompt(company_name: str, page_text: str, linkedin_urls: list[str] = None) -> str:
     linkedin_block = ''
     if linkedin_urls:
         listed = '\n'.join(f'- {u}' for u in linkedin_urls[:10])
         linkedin_block = f"""
-LinkedIn profile URLs found on this website:
+LinkedIn URLs found on website:
 {listed}
-MATCHING RULE for linkedin_url:
-- Assign a URL to a person ONLY if the profile slug contains BOTH their first name AND last name (e.g. "Dharmendra Jain" matches /in/ca-dharmendra-jain-95491326)
-- NEVER assign a URL based on company association, page location, or guessing
-- If no URL contains the person's full name, use empty string ""
+STRICT MATCHING RULE: Assign a LinkedIn URL to a person ONLY IF their exact first AND last name appear in the URL slug (e.g., "Rajesh Kumar" matches "/in/rajesh-kumar-123"). If the name does not clearly match the URL slug, you MUST return "" for linkedin_url. NEVER guess or assign a generic company LinkedIn page to a person.
 """
-    return f"""Identify key decision-makers of the business "{company_name}" from this webpage text.
+    return f"""Identify key decision-makers of "{company_name}" from this webpage text.
 
 {linkedin_block}
 RULES:
-- Only persons whose names are explicitly written on the page
-- Priority roles: Owner, Founder, Co-Founder, CEO, Managing Director, Director, General Manager, CTO, CFO, HR Head
-- email: assign ONLY if physically present AND the email prefix contains the person's name (e.g. "rajesh.sharma@x.com" for Rajesh Sharma) or a role (ceo@, director@). Otherwise empty string.
-- phone: only if physically present in the text
-- linkedin_url: only per the MATCHING RULE above
-- Maximum 5 most relevant persons
-- Empty array if no persons are found. Never invent or force-match any data.
+- Only extract persons whose names are explicitly written on the page.
+- Priority roles: Owner, Founder, CEO, Managing Director, Director, General Manager, CTO, CFO, HR Head.
+- email: assign ONLY if physically present AND the email prefix contains the person's name or a role (e.g., ceo@). Otherwise "".
+- phone: only if physically present.
+- linkedin_url: ONLY per the STRICT MATCHING RULE above. Otherwise "".
+- Maximum 5 most relevant persons.
+- NEVER invent, guess, or hallucinate names, emails, or URLs. Use "" if not found.
 
 Respond ONLY with valid JSON:
 {{"persons": [{{"name": "", "designation": "", "email": "", "phone": "", "linkedin_url": ""}}]}}

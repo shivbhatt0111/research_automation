@@ -49,24 +49,69 @@ class GeminiService:
 
     def find_companies(self, industry: str, location: str, count: int,
                        exclude_names: list[str] = None, variation: int = 0) -> list[dict]:
-        prompt = company_discovery_prompt(industry, location, count, exclude_names)
+        """
+        Dynamically discovers companies based on LLM_DISCOVERY_ORDER in settings.py.
+        - If 'gemini' is first: Tries Gemini Grounding first.
+        - If 'groq' or 'openrouter' is first: Tries Search (Tavily/DDG) + LLM Structuring first.
+        """
+        from django.conf import settings
+        
+        # Read the primary provider from settings
+        primary_provider = settings.LLM_DISCOVERY_ORDER[0] if settings.LLM_DISCOVERY_ORDER else 'groq'
 
+        if primary_provider == 'gemini':
+            # --- PATH 1: Gemini Grounding First ---
+            prompt = company_discovery_prompt(industry, location, count, exclude_names)
+            try:
+                companies = self._parse_json(
+                    self.client.generate(prompt, use_search=True, require_search=True)
+                )
+                logger.info('Discovery via Gemini grounding succeeded')
+                return companies[:count]
+            except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
+                logger.warning('Gemini discovery failed (%s), falling back to Search Service', exc)
+                # Fallback to search service
+                return self._fallback_to_search(industry, location, count, exclude_names, variation)
+        else:
+            # --- PATH 2: Search Service (Groq/OpenRouter) First ---
+            try:
+                companies = self.search.find_companies(
+                    industry, location, count, exclude_names, variation=variation
+                )
+                if companies:
+                    logger.info('Discovery via Search Service (%s) succeeded: %d companies', primary_provider, len(companies))
+                    return companies[:count]
+            except Exception as exc:
+                logger.warning('Search service discovery failed (%s), falling back to Gemini grounding', exc)
+            
+            # Fallback to Gemini
+            prompt = company_discovery_prompt(industry, location, count, exclude_names)
+            try:
+                companies = self._parse_json(
+                    self.client.generate(prompt, use_search=True, require_search=True)
+                )
+                logger.info('Discovery via Gemini grounding succeeded as fallback')
+                return companies[:count]
+            except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
+                logger.error('All discovery methods failed: %s', exc)
+                raise GeminiServiceError('Both Search Service and Gemini grounding discovery failed')
+
+    def _fallback_to_search(self, industry: str, location: str, count: int, 
+                            exclude_names: list[str], variation: int) -> list[dict]:
+        """Helper method for fallback to search service."""
         try:
-            # Discovery MUST be search-based - never accept model memory
-            companies = self._parse_json(
-                self.client.generate(prompt, use_search=True, require_search=True)
+            companies = self.search.find_companies(
+                industry, location, count, exclude_names, variation=variation
             )
-            logger.info('Discovery via Gemini grounding succeeded')
-            return companies[:count]
-        except (GeminiClientError, json.JSONDecodeError, TypeError) as exc:
-            logger.warning('Gemini discovery failed (%s), falling back to DDG search', exc)
-        companies = self.search.find_companies(
-            industry, location, count, exclude_names, variation=variation
-        )
-        if not companies:
-            raise GeminiServiceError('Both Gemini grounding and DDG discovery failed')
-        logger.info('Discovery via DDG search succeeded: %d companies', len(companies))
-        return companies
+            if companies:
+                logger.info('Discovery via Search Service succeeded as fallback: %d companies', len(companies))
+                return companies[:count]
+        except Exception as exc:
+            logger.error('Fallback search service also failed: %s', exc)
+        raise GeminiServiceError('All discovery methods failed')
+    
+    
+    
 
     def extract_contacts(self, company_name: str, page_text: str, location: str = '') -> dict:
         prompt = contact_extraction_prompt(company_name, location or 'India', page_text)

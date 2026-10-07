@@ -20,3 +20,14 @@ staticfiles/
 .vscode/
 .idea/
 *.swp
+
+
+# Celery runtime files
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+celerybeat.pid
+
+# Redis runtime files
+dump.rdb
+*.rdb

@@ -158,6 +158,10 @@ def discover_and_scrape(task_id: int, round_number: int):
         task_id, round_number, request_count, len(unique_companies), contacts_with_data,
     )
 
+
+    for comp in unique_companies:
+        logger.info(f"DISCOVERED: {comp.get('company_name')} | URL: {comp.get('website')}")
+
     if not unique_companies:
         if round_number < MAX_DISCOVERY_ROUNDS:
             logger.info(
@@ -183,6 +187,10 @@ def round_completed(_: list, task_id: int, round_number: int) -> None:
 @shared_task(rate_limit='20/m', max_retries=1, default_retry_delay=30)
 def scrape_company_contact(task_id: int, company: dict) -> None:
     """Chord-safe wrapper: a single business failure never breaks the round."""
+ 
+    import time
+    time.sleep(2) 
+
     try:
         _process_company(task_id, company)
     except Exception as exc:
@@ -222,30 +230,35 @@ def _regex_extract_from_text(text: str) -> tuple[list[str], list[str]]:
 
 
 
+
+
+
+
+
+
+
+
+
+
 def _process_company(task_id: int, company: dict) -> None:
     task = ResearchTask.objects.get(id=task_id)
     name = company.get('company_name') or 'Unknown'
     norm = normalize_company_name(name)
+    website = (company.get('website') or '').strip()
 
-    # Only reject degenerate names (empty, 1-2 chars). Everything else flows
-    # through - garbage companies die naturally at the "No usable data" stage.
+    # 1. INVALID COMPANY NAME CHECK
     if len(name.strip()) < 3:
         logger.info('[Task %d] Degenerate company name skipped: %r', task_id, name)
         _mark_attempted(task_id, company)
         return
 
-    # Directory URLs (cataloxy/justdial/indiamart/zomato/eazydiner etc.) are
-    # listings, not official websites - clean them before any scraping
-    if is_directory_url(company.get('website') or ''):
-        logger.info(
-            '[Task %d] Directory URL as website cleaned: %s',
-            task_id, company.get('website'),
-        )
-        company['website'] = ''
+    # 2. HARD REJECT: DIRECTORY / LISTING URL CHECK (Problem 1 & 4 Fix)
+    if is_directory_url(website):
+        logger.warning('[Task %d] HARD REJECT: Directory/Listing URL detected for %s: %s', task_id, name, website)
+        _mark_attempted(task_id, company)
+        return  # Do not proceed further
 
-    # Reuse data from ANY past task, but ONLY when the previous record's
-    # address matches this task's area (Sanwer data never leaks into a
-    # Pithampur task). Fully dynamic - works for any location strings.
+    # 3. CHECK FOR PREVIOUS VALID DATA
     previous = (
         CompanyContact.objects
         .filter(normalized_name=norm)
@@ -258,11 +271,7 @@ def _process_company(task_id: int, company: dict) -> None:
     if previous and task.location:
         prev_loc = verify_specific_location(previous.address, task.location)
         if prev_loc is False:
-            logger.info(
-                '[Task %d] Previous data area mismatch for %s (this task: %s, prev addr: %s) - fresh scrape',
-                task_id, previous.company_name, task.location, (previous.address or '')[:80],
-            )
-            previous = None
+            previous = None # Location mismatch, force fresh scrape
 
     if previous:
         contact, _ = CompanyContact.objects.get_or_create(
@@ -291,20 +300,17 @@ def _process_company(task_id: int, company: dict) -> None:
                 },
             )
         _enrich_contact(contact, task.location)
-        logger.info('[Task %d] Reused existing data for %s', task_id, previous.company_name)
         return
 
-    # Layer 1: Crawl4AI first (JS rendering, contact+team pages in one pass)
+    # 4. SCRAPING & EXTRACTION LAYERS
     crawler_text, crawler_linkedin = _crawl_company(task_id, name, company)
-
-    # Layer 2: Plain scraper (always runs - catches what crawler missed)
+    
     scraper = ScraperService()
     scraped = scraper.scrape_company(company, location=task.location)
     team_urls = scraped.pop('team_urls', [])
     homepage_linkedin = list(dict.fromkeys(scraped.pop('linkedin_urls', []) + crawler_linkedin))
     page_text = crawler_text + '\n' + scraped.pop('page_text', '')
 
-    # Layer 1.5: Quick regex on crawler text (free, instant - before any AI)
     if crawler_text and (not scraped['email'] or not scraped['phone']):
         crawler_emails, crawler_phones = _regex_extract_from_text(crawler_text)
         if crawler_emails and not scraped['email']:
@@ -312,142 +318,83 @@ def _process_company(task_id: int, company: dict) -> None:
         if crawler_phones and not scraped['phone']:
             scraped['phone'] = crawler_phones[0]
 
-    # Mark crawler-only success as the data source
     if crawler_text and not scraped['source_url'] and (scraped['email'] or scraped['phone']):
-        scraped['source_url'] = company.get('website') or ''
+        scraped['source_url'] = website
         scraped['confidence'] = 'HIGH'
 
-    # Layer 3: AI page extraction (Groq/Gemini router)
     needs_ai = not scraped['email'] or not scraped['address']
-    if needs_ai and (page_text or not company.get('website')):
+    if needs_ai and (page_text or not website):
         ai_contacts = GeminiService().extract_contacts(name, page_text, location=task.location)
         if ai_contacts.get('email'):
             scraped['email'] = ai_contacts['email']
         scraped['phone'] = scraped['phone'] or ai_contacts.get('phone', '')
         scraped['address'] = scraped['address'] or ai_contacts.get('address', '')
 
-    # Layer 4: Search rescue - STRICT OFFICIAL-ONLY.
-    # Rescued contacts are trusted ONLY from the company's official domain.
-    # No-website businesses get NO rescue (third-party data forbidden).
-    if getattr(settings, 'STRICT_OFFICIAL_ONLY', True) is False:
-        # Loose mode (old behavior): rescue from any source
-        if task.location and (not scraped['email'] or not scraped['phone'] or not scraped['address']):
-            searched = GeminiService().search_contacts(name, task.location)
-            if searched:
-                scraped['email'] = scraped['email'] or searched.get('email', '')
-                scraped['phone'] = scraped['phone'] or searched.get('phone', '')
-                scraped['address'] = scraped['address'] or searched.get('address', '')
-    else:
-        official_domain = normalize_website(company.get('website') or '')
-        if (official_domain and task.location
-                and (not scraped['email'] or not scraped['phone'] or not scraped['address'])):
-            searched = GeminiService().search_contacts(
-                name, task.location, official_domain=official_domain
-            )
-            if searched:
-                scraped['email'] = scraped['email'] or searched.get('email', '')
-                scraped['phone'] = scraped['phone'] or searched.get('phone', '')
-                scraped['address'] = scraped['address'] or searched.get('address', '')
+    # 5. SEARCH RESCUE (STRICT OFFICIAL ONLY)
+    official_domain = normalize_website(website)
+    if (official_domain and task.location and (not scraped['email'] or not scraped['phone'] or not scraped['address'])):
+        searched = GeminiService().search_contacts(name, task.location, official_domain=official_domain)
+        if searched:
+            scraped['email'] = scraped['email'] or searched.get('email', '')
+            scraped['phone'] = scraped['phone'] or searched.get('phone', '')
+            scraped['address'] = scraped['address'] or searched.get('address', '')
+
+    # 6. LOCATION & PINCODE VERIFICATION
+    if scraped['address'] and task.location:
+        check = scraped.get('address_check')
+        if check is None:
+            check = address_matches_location(scraped['address'], task.location)
+        if check is False:
+            logger.info('[Task %d] Wrong-city business discarded: %s', task_id, name)
+            _mark_attempted(task_id, company)
+            return
+
+        area_check = verify_specific_location(scraped['address'], task.location)
+        if area_check is False:
+            logger.info('[Task %d] Area-mismatch business discarded: %s', task_id, name)
+            _mark_attempted(task_id, company)
+            return
+
+    # 7. DEDUPLICATION GUARDS
+    _clear_duplicate_website_address(task_id, company, scraped)
+    scraped['email'], scraped['phone'] = _is_duplicate_contact(task_id, scraped['email'], scraped['phone'])
 
     if not scraped['email'] and not scraped['phone'] and not scraped['address']:
         logger.info('[Task %d] No usable data for %s, skipping save', task_id, name)
         _mark_attempted(task_id, company)
         return
 
-    # Pincode-based wrong-city discard - hard reject on confirmed mismatch
-    if scraped['address'] and task.location:
-        check = scraped.get('address_check')
-        if check is None:
-            check = address_matches_location(scraped['address'], task.location)
-        if check is False:
-            logger.info(
-                '[Task %d] Wrong-city business discarded: %s (address: %s)',
-                task_id, name, scraped['address'][:120],
-            )
-            _mark_attempted(task_id, company)
-            return
+    # Website backfill from email domain
+    if not website and scraped['email']:
+        backfill = website_from_email(scraped['email'])
+        if backfill:
+            website = backfill
+            if not scraped['source_url']:
+                scraped['source_url'] = backfill
 
-    # Area-level location check - dynamic for any location format
-    if scraped['address'] and task.location:
-        area_check = verify_specific_location(scraped['address'], task.location)
-        if area_check is False:
-            logger.info(
-                '[Task %d] Area-mismatch business discarded: %s (address: %s)',
-                task_id, name, scraped['address'][:100],
-            )
-            _mark_attempted(task_id, company)
-            return
+    # Email-domain consistency check
+    email_domain = scraped['email'].split('@')[-1] if scraped['email'] else ''
+    website_domain = normalize_website(website)
+    if (email_domain and website_domain and email_domain not in COMMON_EMAIL_PROVIDERS 
+            and email_domain not in website_domain and website_domain not in email_domain):
+        logger.info('[Task %d] Email domain mismatch for %s, clearing email', task_id, name)
+        scraped['email'] = ''
 
-    # Duplicate contact dedup: same email/phone already given to another
-    # company in this task = directory/parent-brand contamination
-    # (pridehotel reservation email, wanderlog/eazydiner listing phones etc.)
-    scraped['email'], scraped['phone'] = _is_duplicate_contact(
-        task_id, scraped['email'], scraped['phone']
-    )
-
-    # If dedup cleared everything (contact was only a duplicate) and there is
-    # no address either, the record adds no value - skip it.
-    if not scraped['email'] and not scraped['phone'] and not scraped['address']:
-        logger.info('[Task %d] Only duplicated data for %s, skipping save', task_id, name)
+    # ========================================================================
+    # 8. FINAL QUALITY GATE: MANDATORY EMAIL (Problem 2 Fix)
+    # ========================================================================
+    if not scraped['email']:
+        logger.warning('[Task %d] HARD REJECT: No valid email found for %s. Email is mandatory.', task_id, name)
         _mark_attempted(task_id, company)
         return
 
-    # Website backfill from email domain (Annova case: info@annovasolutions.com
-    # with empty website -> https://annovasolutions.com)
-    if not company.get('website') and scraped['email']:
-        backfill = website_from_email(scraped['email'])
-        if backfill:
-            company['website'] = backfill
-            if not scraped['source_url']:
-                scraped['source_url'] = backfill
-            logger.info('[Task %d] Website backfilled from email: %s', task_id, backfill)
-
-    # Email-domain consistency: an email from an unrelated domain likely
-    # belongs to a different company (Infoway India / DreamCyber Infoway case)
-    email_domain = scraped['email'].split('@')[-1] if scraped['email'] else ''
-    website_domain = normalize_website(company.get('website') or '')
-    if (email_domain and website_domain
-            and email_domain not in COMMON_EMAIL_PROVIDERS
-            and email_domain not in website_domain
-            and website_domain not in email_domain):
-        logger.info(
-            '[Task %d] Email domain mismatch for %s: %s vs %s - clearing email',
-            task_id, name, scraped['email'], website_domain,
-        )
-        scraped['email'] = ''
-
-    # QUALITY GATE - FINAL: a company without its own website whose only
-    # contact is a generic-provider email (gmail/yahoo etc.) can not be
-    # verified at all. Storing it would poison the database with
-    # untrustworthy records that AI email drafts would later be built on
-    # (MPLUN Indore case). Such businesses are skipped entirely.
-    if not company.get('website') and scraped['email']:
-        if email_domain in COMMON_EMAIL_PROVIDERS:
-            logger.info(
-                '[Task %d] Unverifiable business skipped (no website, generic email): %s',
-                task_id, name,
-            )
-            _mark_attempted(task_id, company)
-            return
-
-    # MINIMUM QUALITY BAR: without a website and without an email, a record
-    # needs BOTH a phone and an address to be identifiable. Anything weaker
-    # is skipped (phone-only or address-only records can not be trusted).
-    if not company.get('website') and not scraped['email']:
-        if not (scraped['phone'] and scraped['address']):
-            logger.info(
-                '[Task %d] Weak record skipped (no website, no email, incomplete contact): %s',
-                task_id, name,
-            )
-            _mark_attempted(task_id, company)
-            return
-
+    # If it passes all gates, SAVE IT
     contact, _ = CompanyContact.objects.update_or_create(
         task_id=task_id,
         normalized_name=norm,
         defaults={
             'company_name': name,
-            'website': company.get('website') or '',
+            'website': website,
             'email': scraped['email'],
             'phone': scraped['phone'],
             'address': scraped['address'],
@@ -457,12 +404,22 @@ def _process_company(task_id: int, company: dict) -> None:
         },
     )
 
-    # Register this company's contacts so the NEXT company getting the same
-    # email/phone gets it cleared (duplicate contamination guard)
     _register_used_contact(task_id, contact.email, contact.phone)
+    _register_used_website_address(task_id, contact.website, contact.address)
 
-    _extract_key_persons(task_id, contact, scraper, company, team_urls,
-                         homepage_linkedin, page_text, task.location)
+    _extract_key_persons(task_id, contact, scraper, company, team_urls, homepage_linkedin, page_text, task.location)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -610,3 +567,50 @@ def _is_duplicate_contact(task_id: int, email: str, phone: str) -> tuple[str, st
         logger.info('[Task %d] Duplicate phone across companies, clearing: %s', task_id, phone)
         phone = ''
     return email, phone
+    
+def _register_used_website_address(task_id: int, website: str, address: str) -> None:
+    """Registers a company's website domain and address fingerprint so the
+    NEXT company receiving the same values gets them cleared (directory
+    listing contamination guard)."""
+    website = website or ''
+    address = address or ''
+    if website:
+        domain = normalize_website(website)
+        if domain:
+            used = cache.get(f'research:used_websites:{task_id}', set())
+            used.add(domain)
+            cache.set(f'research:used_websites:{task_id}', used, timeout=ATTEMPTED_TTL_SECONDS)
+    if address and len(address) > 20:
+        addr_key = re.sub(r'\W+', '', address.lower())[:60]
+        used = cache.get(f'research:used_addresses:{task_id}', set())
+        used.add(addr_key)
+        cache.set(f'research:used_addresses:{task_id}', used, timeout=ATTEMPTED_TTL_SECONDS)
+
+
+def _clear_duplicate_website_address(task_id: int, company: dict, scraped: dict) -> None:
+    """Clears website/address that were already assigned to a DIFFERENT
+    company in the same task (directory listing contamination)."""
+    used_websites = cache.get(f'research:used_websites:{task_id}', set())
+    used_addresses = cache.get(f'research:used_addresses:{task_id}', set())
+
+    website = (company.get('website') or '').strip()
+    address = (scraped.get('address') or '').strip()
+
+    if website:
+        domain = normalize_website(website)
+        if domain and domain in used_websites:
+            logger.info(
+                '[Task %d] Duplicate website across companies, clearing: %s',
+                task_id, website,
+            )
+            company['website'] = ''
+            scraped['source_url'] = ''
+
+    if address and len(address) > 20:
+        addr_key = re.sub(r'\W+', '', address.lower())[:60]
+        if addr_key in used_addresses:
+            logger.info(
+                '[Task %d] Duplicate address across companies, clearing: %s',
+                task_id, address[:60],
+            )
+            scraped['address'] = ''

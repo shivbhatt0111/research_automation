@@ -109,17 +109,20 @@ class SearchService:
             exclude_block = ('DO NOT include these already-tried businesses: '
                              + ', '.join(exclude_names[:20]) + '\n')
 
-        # Query variations - har discovery attempt alag angle se search kare,
-        # taki retry rounds pe naye results mil sakein
+        # Clean industry string for better search engine matching
+        clean_industry = industry.replace("with official website", "").replace("companies", "").strip()
+        
+        # Aggressive negative filters to block directories at the search engine level
+        negative_filters = "-indiamart -tradeindia -justdial -textileinfomedia -sulekha -exportersindia -zauba -tofler -directory -list"
+
         query_sets = [
-            (f'best {industry} in {location} official website',
-             f'top {industry} {location} contact details'),
-            (f'{industry} companies {location} list',
-             f'{industry} {location} directory'),
-            (f'leading {industry} firms {location} website contact',
-             f'{industry} {location} top companies email phone'),
-            (f'{industry} {location} latest companies 2024 2025',
-             f'major {industry} units {location} contact'),
+            # Query 1: Direct official site focus
+            (f'"{clean_industry}" "{location}" "contact us" email phone {negative_filters}',
+             f'"{clean_industry}" manufacturers "{location}" official website .com OR .in {negative_filters}'),
+            
+            # Query 2: Domain-specific search
+            (f'site:.in OR site:.com "{clean_industry}" "{location}" contact',
+             f'"{clean_industry}" factory "{location}" email address {negative_filters}'),
         ]
         selected_queries = query_sets[variation % len(query_sets)]
 
@@ -133,18 +136,21 @@ class SearchService:
             return []
 
         context = '\n---\n'.join(snippets[:12])
-        prompt = f"""You are a business research analyst. From these live web search results, identify up to {count} real {industry} businesses physically located in {location}.
+        
+        prompt = f"""You are a strict business research analyst. From these live web search results, identify up to {count} real {clean_industry} businesses physically located in {location}.
 
-{exclude_block}RULES:
-- Only businesses whose result clearly indicates presence in {location}
-- Prefer businesses with their own working website over big chains
-- Do not invent businesses or websites
+{exclude_block}
+CRITICAL RULES:
+1. FORBIDDEN SOURCES: IGNORE ANY RESULT FROM directories or aggregators. 
+2. WEBSITE: Must be the company's OWN official domain (e.g., companyname.com or companyname.in). If the result is a directory listing, DO NOT extract it. Return empty string "" for website if no official site is clearly found.
+3. LOCATION: Must be physically in {location}.
+4. Do not invent or guess data.
 
 Search results:
 {context}
 
-Respond ONLY with a JSON array, maximum {count} items, no explanations:
-[{{"company_name": "...", "website": "https://...", "description": "one short line", "contact_page": "https://..."}}]"""
+Respond ONLY with a JSON array, maximum {count} items:
+[{{"company_name": "...", "website": "https://...", "description": "...", "contact_page": "https://..."}}]"""
 
         try:
             raw = self.router.generate(prompt)
